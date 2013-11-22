@@ -1,0 +1,1 @@
+checknout verzi simlibu (verze z minuleho roku)
