@@ -1,0 +1,7 @@
+Okruh 7: Model cloudového centra
+
+Modelujte počítačové centrum služeb vzdáleně připojeným uživatelům (cloud).
+Systém můžete navrhnout jako hypotetický, dobré je však alespoň trochu převzít inspiraci z existujících systémů
+světových nebo domácích provozovatelů služeb (iCloud, Microsoft, Google, Dropbox, ...). 
+Model musí obsahovat alespoň tři služby centra (např. uložení souborů, streamování hudby a videa, mail, chat, ...). 
+Modelujte vytížení centra. Předpokládejte časově proměnlivé procesy příchodů požadavků.
