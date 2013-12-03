@@ -17,25 +17,25 @@
 
 #define sim_T 3600*24*7
 
-const int server_A_req_cap = 10000;
-const int server_B_req_cap = 5000;
-const int server_C_req_cap = 2500;
-const int server_D_req_cap = 3000;
+const int server_A_net_link_cap = 10000;
+const int server_B_net_link_cap = 5000;
+const int server_C_net_link_cap = 2500;
+const int server_D_net_link_cap = 3000;
 
-Store server_A("Server A", server_A_req_cap);
-Store server_B("Server B", server_B_req_cap);
-Store server_C("Server C", server_C_req_cap);
-Store server_D("Server D", server_D_req_cap);
+Store server_A_net_link("Server A - network link", server_A_net_link_cap);
+Store server_B_net_link("Server B - network link", server_B_net_link_cap);
+Store server_C_net_link("Server C - network link", server_C_net_link_cap);
+Store server_D_net_link("Server D - network link", server_D_net_link_cap);
 
 /* zarizeni ???*/
 //Facility
 
 bool server_overload_flag = false;
 
-double server_A_req_count = 0;
-double server_B_req_count = 0;
-double server_C_req_count = 0;
-double server_D_req_count = 0;
+double server_A_net_link_req_count = 0;
+double server_B_net_link_req_count = 0;
+double server_C_net_link_req_count = 0;
+double server_D_net_link_req_count = 0;
 
 /* histogramy ...*/
 
@@ -48,7 +48,7 @@ public:
 };
 
 
-class RequestGeneratorUS : public Event {
+class RequestGeneratorUs : public Event {
 public:
 	void Behavior() {
 		(new loadBalancing(0))->Activate();
@@ -73,3 +73,27 @@ public:
 };
 
 
+int main() {
+	Init(0, sim_T);
+
+	// General test
+	(new RequestGeneratorGeneral)->Activate();
+	// .
+	// .
+	// .
+	Run();
+
+	// histogram output
+	// histogram_name.Output();
+	
+/*
+	// EU test
+	(new RequestGeneratorEu)->Activate();
+
+
+	// US test
+	(new RequestGeneratorUs)->Activate();
+
+*/
+
+}
