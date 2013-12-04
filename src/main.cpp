@@ -127,6 +127,7 @@ public:
 			A_server:
 			if (cluster_overloaded) {
 			//if (!overloaded.Busy()) {
+				
 				Enter(server_A_net_link, 1);
 				Wait(A_req_treatment_T);
 				Leave(server_A_net_link, 1);
