@@ -21,7 +21,7 @@ using namespace std;
 #define A_req_treatment_T Uniform(0.001, 0.01)
 #define B_req_treatment_T Uniform(0.005, 0.1)
 #define C_req_treatment_T Uniform(0.01, 0.1)
-#define D_req_treatment_T Uniform(0.005, 0.1)
+#define D_req_treatment_T Uniform(0.025, 0.1)
 
 #define DEBUG 1
 
@@ -110,7 +110,10 @@ Facility  D_channel[server_D_NCHANNEL];
 Queue     D_channel_queue("Server D channel queue");
 
 bool overloaded = false;
+bool overwhelmed = false;
 double overloaded_T = 0;
+double overwhelmed_T = 0;
+double normal_state_T = 0;
 
 double cluster_req_count = 0;
 double ignored_req_count = 0;
@@ -119,8 +122,10 @@ double server_B_net_link_req_count = 0;
 double server_C_net_link_req_count = 0;
 double server_D_net_link_req_count = 0;
 
-Histogram clusterOverloadTime("Cluster overload time", 0, 0.1, 30);
-Histogram treatmentTime("Treatment time", 0, 2 seconds, 30);
+Histogram clusterOverloadTime("Cluster face to heavy traffic - Cluster is overloaded", 0, 0.1, 30);
+Histogram clusterOverwhelmedTime("Cluster is overwhelmed", 0, 0.1, 30);
+Histogram clusterNormalStateTime("Cluster face to normal traffic", 10, 10, 50);
+Histogram treatmentTime("Cluster net link treatment time", 0, 2 seconds, 30);
 
 /** TODO:
  *	detekce kdy je cluster zas v poradku + zapis do Histogramu Time - overloaded_T
@@ -128,7 +133,7 @@ Histogram treatmentTime("Treatment time", 0, 2 seconds, 30);
  *	to, co je vyreseno goto by melo asi byt nejak reseno frontou
  **/
 
-bool checkClusterCPUsOverload() {
+int checkClusterCPUsOverload() {
  	int overloaded_count = 0;
 	int i;
 	for(i = 0; i < server_A_NCPU; i++) {
@@ -161,42 +166,73 @@ bool checkClusterCPUsOverload() {
 	}
 
 	#ifdef DEBUG
-		cout << "servers overloaded count:" << overloaded_count << endl;
+		cout << "servers cpu overloaded count:" << overloaded_count << endl;
 	#endif
 
-	// zanest do PS
-	return overloaded_count == 4;
+	return overloaded_count;
 }
 
 class clusterOverloadCheck : public Process {
 public:
 	void Behavior() {
 
+		int ret = checkClusterCPUsOverload();
+
 		if (server_A_net_link.Used()/server_A_net_link.Capacity() >= 0.9
 			&& server_B_net_link.Used()/server_B_net_link.Capacity() >= 0.9
 			&& server_C_net_link.Used()/server_C_net_link.Capacity() >= 0.9
 			&& server_D_net_link.Used()/server_D_net_link.Capacity() >= 0.9
-			&& checkClusterCPUsOverload() ) {
+			&& ret >= 3 ) {
 
-			#ifdef DEBUG
-				cout << "cluster is overloaded" << endl;
-			#endif 
-
-			overloaded = true;
-			overloaded_T = Time;
-		}
-		else {
-			overloaded = false;
-			// beware of initial check
-			if (overloaded_T != 0) {
-
+			if (server_A_net_link.Full() && server_B_net_link.Full() && server_C_net_link.Full()
+				&& server_D_net_link.Full() && ret == 4) {
+				
 				#ifdef DEBUG
-					cout << "Cluster turned to normal state, overloaded time:" << Time - overloaded_T << "endl";
+					cout << "cluster is overwhelmed" << endl;
 				#endif
 
-				clusterOverloadTime(Time - overloaded_T);
+				overwhelmed = true;
+				overwhelmed_T = Time;
 			}
-			overloaded_T = 0;
+			else {
+
+				#ifdef DEBUG
+					cout << "cluster is overloaded" << endl;
+				#endif 
+
+				overloaded = true;
+				overloaded_T = Time;
+			}
+		}
+		else {
+			#ifdef DEBUG
+				cout << "cluster is in normal state" << endl;
+			#endif
+			if (overwhelmed) {
+				if (overwhelmed_T != 0) {
+
+					#ifdef DEBUG
+						cout << "Cluster turned to normal state, overwhelmed time:" << Time - overwhelmed_T << "endl";
+					#endif
+
+					clusterOverwhelmedTime(Time - overwhelmed_T);
+				}
+				overwhelmed = false;
+				overwhelmed_T = 0;
+			}
+			else if (overloaded) {
+				// beware of initial check
+				if (overloaded_T != 0) {
+
+					#ifdef DEBUG
+						cout << "Cluster turned to normal state, overloaded time:" << Time - overloaded_T << "endl";
+					#endif
+
+					clusterOverloadTime(Time - overloaded_T);
+				}
+				overloaded = false;
+				overloaded_T = 0;
+			}
 		}
 
 		//Terminate();	
@@ -215,6 +251,7 @@ public:
 
 		(new clusterOverloadCheck)->Activate();
 		double prob = Random();
+		double t;
 		// 35% chance,that request will be treated by server A
 		if (prob < 0.35) {
 			A_server:
@@ -223,18 +260,22 @@ public:
 				#ifdef DEBUG
 					cout << "request treated by server A. total requests count:" << server_A_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_A_net_link, 1);
 				Wait(A_req_treatment_T);
 				Leave(server_A_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else if (server_A_net_link.Used()/server_A_net_link.Capacity() < 0.9) {
 				server_A_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server A. total requests count:" << server_A_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_A_net_link, 1);
 				Wait(A_req_treatment_T);
 				Leave(server_A_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else goto B_server;
 		}
@@ -246,18 +287,22 @@ public:
 				#ifdef DEBUG
 					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_B_net_link, 1);
 				Wait(B_req_treatment_T);
 				Leave(server_B_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else if (server_B_net_link.Used()/server_B_net_link.Capacity() < 0.9) {
 				server_B_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_B_net_link, 1);
 				Wait(B_req_treatment_T);
 				Leave(server_B_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else goto C_server;
 		}
@@ -269,25 +314,29 @@ public:
 				#ifdef DEBUG
 					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_C_net_link, 1);
 				Wait(C_req_treatment_T);
 				Leave(server_C_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else if (server_C_net_link.Used()/server_C_net_link.Capacity() < 0.9) {
 				server_C_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_C_net_link, 1);
 				Wait(C_req_treatment_T);
 				Leave(server_C_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else goto D_server;
 		}
 		// 15% chance,that request will be treated by server D
 		else {
 			D_server:
-			if (overloaded && server_D_net_link.Full()) {
+			if (overwhelmed) {
 				// cluster je zahlcen - odchod transakce ze systemu
 				ignored_req_count++;
 				#ifdef DEBUG
@@ -300,18 +349,22 @@ public:
 				#ifdef DEBUG
 					cout << "request treated by server D. total requests count:" << server_D_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_D_net_link, 1);
 				Wait(D_req_treatment_T);
 				Leave(server_D_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else if (server_D_net_link.Used()/server_D_net_link.Capacity() < 0.9) {
 				server_D_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server D. total requests count:" << server_D_net_link_req_count << endl;
 				#endif
+				t = Time;
 				Enter(server_D_net_link, 1);
 				Wait(D_req_treatment_T);
 				Leave(server_D_net_link, 1);
+				treatmentTime(Time - t);
 			}
 			else {				
 				goto A_server;
@@ -400,6 +453,7 @@ int main() {
 
 	// histogram output
 	clusterOverloadTime.Output();
-	//treatmentTime.Output();
+	clusterOverwhelmedTime.Output();
+	treatmentTime.Output();
 
 }
