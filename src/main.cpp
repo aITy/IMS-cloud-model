@@ -18,25 +18,26 @@ using namespace std;
 #define seconds	second
 #define miliseconds * 1.0
 
-#define A_req_treatment_T Uniform(0.001, 0.01)
-#define B_req_treatment_T Uniform(0.005, 0.1)
-#define C_req_treatment_T Uniform(0.01, 0.1)
-#define D_req_treatment_T Uniform(0.025, 0.1)
+#define A_req_treatment_T Uniform(0.1 seconds, 1 seconds)
+#define B_req_treatment_T Uniform(0.25 seconds, 1 seconds)
+#define C_req_treatment_T Uniform(0.5 seconds, 1 seconds)
+#define D_req_treatment_T Uniform(0.5 seconds, 1.5 seconds)
 
-#define DEBUG 1
+#define OVERLOAD_RATIO (double)0.9
 
-// ty statistiky dropboxu jsou za 42 dni
-#define sim_T 3600*24*42 seconds
+//#define DEBUG 1
 
-const int server_A_net_link_cap = 10000;
-const int server_B_net_link_cap = 5000;
-const int server_C_net_link_cap = 2500;
-const int server_D_net_link_cap = 3000;
+#define sim_T 3600 * 24 seconds
 
-const int server_A_NCPU = 8;
-const int server_B_NCPU = 6;
-const int server_C_NCPU = 3;
-const int server_D_NCPU = 4;
+const int server_A_net_link_cap = 500;
+const int server_B_net_link_cap = 250;
+const int server_C_net_link_cap = 200;
+const int server_D_net_link_cap = 100;
+
+const int server_A_NCPU = 4;
+const int server_B_NCPU = 3;
+const int server_C_NCPU = 2;
+const int server_D_NCPU = 1;
 
 const int server_A_NDISK = 10;
 const int server_B_NDISK = 6;
@@ -109,11 +110,12 @@ Queue     C_channel_queue("Server C channel queue");
 Facility  D_channel[server_D_NCHANNEL];
 Queue     D_channel_queue("Server D channel queue");
 
-bool overloaded = false;
-bool overwhelmed = false;
+bool overloaded = false;//zatizeni
+bool overwhelmed = false;//zahlceni (DDoS)
 double overloaded_T = 0;
 double overwhelmed_T = 0;
 double normal_state_T = 0;
+bool normal_state_changed = false;
 
 double cluster_req_count = 0;
 double ignored_req_count = 0;
@@ -122,16 +124,20 @@ double server_B_net_link_req_count = 0;
 double server_C_net_link_req_count = 0;
 double server_D_net_link_req_count = 0;
 
-Histogram clusterOverloadTime("Cluster face to heavy traffic - Cluster is overloaded", 0, 0.1, 30);
-Histogram clusterOverwhelmedTime("Cluster is overwhelmed", 0, 0.1, 30);
-Histogram clusterNormalStateTime("Cluster face to normal traffic", 10, 10, 50);
-Histogram treatmentTime("Cluster net link treatment time", 0, 2 seconds, 30);
+Histogram clusterOverloadTime("Cluster face to heavy traffic - overloaded", 0, 0.25 seconds, 30);
+Histogram clusterOverwhelmedTime("Cluster is overwhelmed", 0, 0.5 seconds, 30);
+Histogram clusterNormalStateTime("Cluster face to normal traffic", 0, 25 seconds);
+Histogram treatmentTime("Cluster net link treatment time", 0, 0.025 seconds, 30);
 
-/** TODO:
- *	detekce kdy je cluster zas v poradku + zapis do Histogramu Time - overloaded_T
- *	to jeste zalezi,jak to udelat spravne
- *	to, co je vyreseno goto by melo asi byt nejak reseno frontou
- **/
+Stat clusterLoadPercentage("Cluster load percentage %");
+Stat serverAloadPercentage("Server A load percentage %");
+Stat serverBloadPercentage("Server B load percentage %");
+Stat serverCloadPercentage("Server C load percentage %");
+Stat serverDloadPercentage("Server D load percentage %");
+
+int dayhours() {
+	return ((int) (Time / 3600)) % 24;
+}
 
 int checkClusterCPUsOverload() {
  	int overloaded_count = 0;
@@ -140,30 +146,25 @@ int checkClusterCPUsOverload() {
 		if (! A_cpu[i].Busy())
 			break;
 	}
-	if (i == server_A_NCPU - 1) {
-		overloaded_count++;
-	}
+	if (i == server_A_NCPU - 1) overloaded_count++;
+
 	for(i = 0; i < server_B_NCPU; i++) {
 		if (! B_cpu[i].Busy())
 			break;
 	}
-	if (i == server_B_NCPU - 1) {
-		overloaded_count++;
-	}
+	if (i == server_B_NCPU - 1) overloaded_count++;
+
 	for(i = 0; i < server_C_NCPU; i++) {
 		if (! C_cpu[i].Busy())
 			break;
 	}
-	if (i == server_C_NCPU - 1) {
-		overloaded_count++;
-	}
+	if (i == server_C_NCPU - 1) overloaded_count++;
+
 	for(i = 0; i < server_D_NCPU; i++) {
 		if (! D_cpu[i].Busy())
 			break;
 	}
-	if (i == server_D_NCPU - 1) {
-		overloaded_count++;
-	}
+	if (i == server_D_NCPU - 1) overloaded_count++;
 
 	#ifdef DEBUG
 		cout << "servers cpu overloaded count:" << overloaded_count << endl;
@@ -177,21 +178,42 @@ public:
 	void Behavior() {
 
 		int ret = checkClusterCPUsOverload();
+		double server_A_load_percentage = (double)server_A_net_link.Used()/server_A_net_link.Capacity();
+		double server_B_load_percentage = (double)server_B_net_link.Used()/server_B_net_link.Capacity();
+		double server_C_load_percentage = (double)server_C_net_link.Used()/server_C_net_link.Capacity();
+		double server_D_load_percentage = (double)server_D_net_link.Used()/server_D_net_link.Capacity();
 
-		if (server_A_net_link.Used()/server_A_net_link.Capacity() >= 0.9
-			&& server_B_net_link.Used()/server_B_net_link.Capacity() >= 0.9
-			&& server_C_net_link.Used()/server_C_net_link.Capacity() >= 0.9
-			&& server_D_net_link.Used()/server_D_net_link.Capacity() >= 0.9
-			&& ret >= 3 ) {
+		#ifdef DEBUG
+			cout << "server A load: " << server_A_load_percentage << endl;
+			cout << "server B load: " << server_B_load_percentage << endl;
+			cout << "server C load: " << server_C_load_percentage << endl;
+			cout << "server D load: " << server_D_load_percentage << endl;
+		#endif
+
+		serverAloadPercentage(server_A_load_percentage);
+		serverBloadPercentage(server_B_load_percentage);
+		serverCloadPercentage(server_C_load_percentage);
+		serverDloadPercentage(server_D_load_percentage);
+		clusterLoadPercentage( (server_A_load_percentage + server_B_load_percentage
+							+ server_C_load_percentage + server_D_load_percentage) / 4);
+
+		int overloaded_servers = 0;
+		if (server_A_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
+		if (server_B_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
+		if (server_C_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
+		if (server_D_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
+
+		if (overloaded_servers >= 3){//&& ret >= 2) {
 
 			if (server_A_net_link.Full() && server_B_net_link.Full() && server_C_net_link.Full()
-				&& server_D_net_link.Full() && ret == 4) {
+				&& server_D_net_link.Full() ){//&& ret == 4) {
 				
 				#ifdef DEBUG
 					cout << "cluster is overwhelmed" << endl;
 				#endif
 
 				overwhelmed = true;
+				normal_state_changed = true;
 				overwhelmed_T = Time;
 			}
 			else {
@@ -201,8 +223,11 @@ public:
 				#endif 
 
 				overloaded = true;
+				normal_state_changed = true;
 				overloaded_T = Time;
 			}
+			clusterNormalStateTime(Time - normal_state_T);
+			normal_state_T = 0;
 		}
 		else {
 			#ifdef DEBUG
@@ -233,6 +258,9 @@ public:
 				overloaded = false;
 				overloaded_T = 0;
 			}
+
+			if (normal_state_T == 0)
+				normal_state_T = Time;
 		}
 
 		//Terminate();	
@@ -266,7 +294,7 @@ public:
 				Leave(server_A_net_link, 1);
 				treatmentTime(Time - t);
 			}
-			else if (server_A_net_link.Used()/server_A_net_link.Capacity() < 0.9) {
+			else if ((double)server_A_net_link.Used()/server_A_net_link.Capacity() < OVERLOAD_RATIO) {
 				server_A_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server A. total requests count:" << server_A_net_link_req_count << endl;
@@ -293,7 +321,7 @@ public:
 				Leave(server_B_net_link, 1);
 				treatmentTime(Time - t);
 			}
-			else if (server_B_net_link.Used()/server_B_net_link.Capacity() < 0.9) {
+			else if ((double)server_B_net_link.Used()/server_B_net_link.Capacity() < OVERLOAD_RATIO) {
 				server_B_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
@@ -320,7 +348,7 @@ public:
 				Leave(server_C_net_link, 1);
 				treatmentTime(Time - t);
 			}
-			else if (server_C_net_link.Used()/server_C_net_link.Capacity() < 0.9) {
+			else if ((double)server_C_net_link.Used()/server_C_net_link.Capacity() < OVERLOAD_RATIO) {
 				server_C_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
@@ -355,7 +383,7 @@ public:
 				Leave(server_D_net_link, 1);
 				treatmentTime(Time - t);
 			}
-			else if (server_D_net_link.Used()/server_D_net_link.Capacity() < 0.9) {
+			else if ((double)server_D_net_link.Used()/server_D_net_link.Capacity() < OVERLOAD_RATIO) {
 				server_D_net_link_req_count++;
 				#ifdef DEBUG
 					cout << "request treated by server D. total requests count:" << server_D_net_link_req_count << endl;
@@ -373,55 +401,64 @@ public:
 	}
 };
 
-class loadBalancing : public Process {
-public:
-	loadBalancing(int priority) : Process(priority) {};
-	void Behavior() {
-		WaitUntil(server_A_net_link_queue.Length()>0
-			|| server_B_net_link_queue.Length()>0
-			|| server_C_net_link_queue.Length()>0
-			|| server_D_net_link_queue.Length()>0);
-
-		//blbost, ten request je sice ve fronte, ale vola se na nej activate a tim
-		// se zas dostane do pohybu,takze chovani musi byt napsano pro ten request
-		// nejde si vratit z fronty dany process a nakladat s nim nejak
-		// fronta nema takove metody, mozna to pujde jinak,ale co jsem koukal,tak
-		// ani Entity, ani process ani queue nic takoveho nema,protoze je to myslenkove blbe
-
-	}
-};
-
-/*
-class RequestGeneratorUs : public Event {
-	void Behavior() {
-		(new loadBalancing(0))->Activate();
-		Activate(Time + Exponential(0.05));
-	}
-public:
-	RequestGeneratorUs(){Activate();}
-};
-*/
 class RequestGeneratorUs : public Event {
 	void Behavior() {
 		#ifdef DEBUG
-			cout << "generating request" << endl;
+			cout << "generating request in US (more often)" << endl;
 		#endif
 		(new incomingClusterRequest(0))->Activate();
-		Activate(Time + Exponential(0.05));
+		Activate(Time + Exponential(0.05 seconds));
+	}
+};
+
+class highTrafficGenerator : public Event {
+	void Behavior() {
+		#ifdef DEBUG
+			cout << "generating high traffic" << endl;
+		#endif
+
+		if (dayhours() >= 14)
+			(new incomingClusterRequest(0))->Activate();
+
+		// to 22:00, next activation will be in 16 hours, that is at 2pm next day
+		if (dayhours() == 23)
+			Activate(Time + (16 * 3600 seconds));
+		else
+			Activate(Time + Exponential(0.025 seconds));
+	}
+};
+
+// simulating overwhelm
+class DDosGenerator : public Event {
+	void Behavior() {
+		#ifdef DEBUG
+			cout << "trying to achieve DDoS attack." << endl;
+		#endif
+		// testing ... Dal bych to jen jednou treba 3 den nebo neco ...
+		if (dayhours() == 2) {
+			(new incomingClusterRequest(0))->Activate();
+		}
+
 	}
 };
 
 class RequestGeneratorEu : public Event {
 	void Behavior() {
-		(new loadBalancing(0))->Activate();
-		Activate(Time + Exponential(0.1));
+		#ifdef DEBUG
+			cout << "generating request in EU (less often)" << endl;
+		#endif
+		(new incomingClusterRequest(0))->Activate();
+		Activate(Time + Exponential(0.1 seconds));
 	}
 };
 
 class RequestGeneratorGeneral : public Event {
 	void Behavior() {
-		(new loadBalancing(0))->Activate();
-		Activate(Time + Exponential(0.075));
+		#ifdef DEBUG
+			cout << "generating general request averaged time" << endl;
+		#endif
+		(new incomingClusterRequest(0))->Activate();
+		Activate(Time + Exponential(0.075 seconds));
 	}
 };
 
@@ -446,14 +483,28 @@ int main() {
 
 	// General test
 	(new RequestGeneratorUs)->Activate();
+	(new highTrafficGenerator)->Activate();
 	// .
 	// .
 	// .
 	Run();
 
+	if (!normal_state_changed)
+		clusterNormalStateTime(Time - normal_state_T);
+
+	cout << "Number of received requests: " << cluster_req_count << endl;
+	cout << "Number of ignored requests: " << ignored_req_count << endl;
+	cout << "Ignored requests ratio: " << (double)ignored_req_count/cluster_req_count << endl;
+
 	// histogram output
 	clusterOverloadTime.Output();
 	clusterOverwhelmedTime.Output();
+	clusterNormalStateTime.Output();
+	clusterLoadPercentage.Output();
+	serverAloadPercentage.Output();
+	serverBloadPercentage.Output();
+	serverCloadPercentage.Output();
+	serverDloadPercentage.Output();
 	treatmentTime.Output();
 
 }
