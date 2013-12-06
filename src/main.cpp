@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 using namespace std;
 
@@ -22,12 +23,17 @@ using namespace std;
 #define seconds	second
 #define miliseconds * 1.0
 
-#define A_req_treatment_T Uniform(0.1 seconds, 1 seconds)
-#define B_req_treatment_T Uniform(0.25 seconds, 1 seconds)
-#define C_req_treatment_T Uniform(0.25 seconds, 1 seconds)
-#define D_req_treatment_T Uniform(0.5 seconds, 1.5 seconds)
+#define A_req_treatment_T Uniform(0.0025 seconds, 0.05 seconds)
+#define B_req_treatment_T Uniform(0.005 seconds, 0.1 seconds)
+#define C_req_treatment_T Uniform(0.005 seconds, 0.1 seconds)
+#define D_req_treatment_T Uniform(0.05 seconds, 0.15 seconds)
 
-#define OVERLOAD_RATIO 0.9
+#define server_A_net_link_treatment_T Uniform(0.1 seconds, 0.25 seconds)
+#define server_B_net_link_treatment_T Uniform(0.1 seconds, 0.35 seconds)
+#define server_C_net_link_treatment_T Uniform(0.1 seconds, 0.5 seconds)
+#define server_D_net_link_treatment_T Uniform(0.1 seconds, 0.5 seconds)
+
+#define OVERLOAD_RATIO 0.8
 
 //#define DEBUG 1
 
@@ -38,10 +44,10 @@ const int server_B_net_link_cap = 75;
 const int server_C_net_link_cap = 50;
 const int server_D_net_link_cap = 50;
 
-const int server_A_NCPU = 4;
-const int server_B_NCPU = 3;
-const int server_C_NCPU = 2;
-const int server_D_NCPU = 1;
+const int server_A_NCPU = 32;
+const int server_B_NCPU = 16;
+const int server_C_NCPU = 16;
+const int server_D_NCPU = 8;
 
 const int server_A_NDISK = 10;
 const int server_B_NDISK = 6;
@@ -133,16 +139,37 @@ Histogram clusterOverwhelmedTime("Cluster is overwhelmed", 0, 0.5 seconds, 30);
 Histogram clusterNormalStateTime("Cluster face to normal traffic", 0, 25 seconds);
 Histogram treatmentTime("Cluster net link treatment time", 0, 0.025 seconds, 30);
 
-Stat clusterLoadPercentage("Cluster load percentage %");
-Stat serverAloadPercentage("Server A load percentage %");
-Stat serverBloadPercentage("Server B load percentage %");
-Stat serverCloadPercentage("Server C load percentage %");
-Stat serverDloadPercentage("Server D load percentage %");
+Stat clusterNetlinkLoadPercentage("Cluster netlink load percentage");
+Stat serverAnetlinkLoadPercentage("Server A netlink load percentage");
+Stat serverBnetlinkLoadPercentage("Server B netlink load percentage");
+Stat serverCnetlinkLoadPercentage("Server C netlink load percentage");
+Stat serverDnetlinkLoadPercentage("Server D netlink load percentage");
+
+Stat clusterCPUsLoadPercentage("Cluster CPUs load percentage");
+Stat serverACPUsLoadPercentage("Server A CPUs load percentage");
+Stat serverBCPUsLoadPercentage("Server B CPUs load percentage");
+Stat serverCCPUsLoadPercentage("Server C CPUs load percentage");
+Stat serverDCPUsLoadPercentage("Server D CPUs load percentage");
+
+double getMax(int count, ...) {
+	va_list ap;
+	double aux;
+	double max = 0.0;
+	va_start(ap, count);
+	for(int j = 0; j < count; j++) {
+		aux = va_arg(ap, double);
+		if (aux >= max)
+			max = aux;
+	}
+	va_end(ap);
+	return max;
+}
 
 int parseTime(const char * str) {
 
     if (strcmp(str, "day") == 0)
     	return (int) (Time / ((double)1000*60*60*24.0));
+
     if (strcmp(str, "hours") == 0) {
     	int hours_nb = (int) (Time / ((double)1000*60*60.0));
     	return (hours_nb == 24) ? 0 : hours_nb;
@@ -197,36 +224,79 @@ class clusterOverloadCheck : public Process {
 public:
 	void Behavior() {
 
-		int ret = checkClusterCPUsOverload();
-		double server_A_load_percentage = (double)server_A_net_link.Used()/server_A_net_link.Capacity();
-		double server_B_load_percentage = (double)server_B_net_link.Used()/server_B_net_link.Capacity();
-		double server_C_load_percentage = (double)server_C_net_link.Used()/server_C_net_link.Capacity();
-		double server_D_load_percentage = (double)server_D_net_link.Used()/server_D_net_link.Capacity();
+		//int ret = checkClusterCPUsOverload();
+		double server_A_netlink_load_percentage = (double)server_A_net_link.Used()/server_A_net_link.Capacity();
+		double server_B_netlink_load_percentage = (double)server_B_net_link.Used()/server_B_net_link.Capacity();
+		double server_C_netlink_load_percentage = (double)server_C_net_link.Used()/server_C_net_link.Capacity();
+		double server_D_netlink_load_percentage = (double)server_D_net_link.Used()/server_D_net_link.Capacity();
+
+		double server_A_CPUs_load_percentage, server_B_CPUs_load_percentage,
+			server_C_CPUs_load_percentage, server_D_CPUs_load_percentage;
+
+		int i;
+		for(i = 0; i < server_A_NCPU; i++) {
+			if (! A_cpu[i].Busy())
+				break;
+		}
+		server_A_CPUs_load_percentage = (double) i/server_A_NCPU;
+
+		for(i = 0; i < server_B_NCPU; i++) {
+			if (! B_cpu[i].Busy())
+				break;
+		}
+		server_B_CPUs_load_percentage = (double) i/server_B_NCPU;
+
+		for(i = 0; i < server_C_NCPU; i++) {
+			if (! C_cpu[i].Busy())
+				break;
+		}
+		server_C_CPUs_load_percentage = (double) i/server_C_NCPU;
+
+		for(i = 0; i < server_D_NCPU; i++) {
+			if (! D_cpu[i].Busy())
+				break;
+		}
+		server_D_CPUs_load_percentage = (double) i/server_D_NCPU;
 
 		#ifdef DEBUG
-			cout << "server A load: " << server_A_load_percentage << endl;
-			cout << "server B load: " << server_B_load_percentage << endl;
-			cout << "server C load: " << server_C_load_percentage << endl;
-			cout << "server D load: " << server_D_load_percentage << endl;
+			cout << "server A netlink load: " << server_A_netlink_load_percentage << endl;
+			cout << "server B netlink load: " << server_B_netlink_load_percentage << endl;
+			cout << "server C netlink load: " << server_C_netlink_load_percentage << endl;
+			cout << "server D netlink load: " << server_D_netlink_load_percentage << endl;
 		#endif
 
-		serverAloadPercentage(server_A_load_percentage);
-		serverBloadPercentage(server_B_load_percentage);
-		serverCloadPercentage(server_C_load_percentage);
-		serverDloadPercentage(server_D_load_percentage);
-		clusterLoadPercentage( (server_A_load_percentage + server_B_load_percentage
-							+ server_C_load_percentage + server_D_load_percentage) / 4);
+		serverACPUsLoadPercentage(server_A_CPUs_load_percentage);
+		serverBCPUsLoadPercentage(server_B_CPUs_load_percentage);
+		serverCCPUsLoadPercentage(server_C_CPUs_load_percentage);
+		serverDCPUsLoadPercentage(server_D_CPUs_load_percentage);
+		clusterCPUsLoadPercentage((server_A_CPUs_load_percentage + server_B_CPUs_load_percentage
+							+ server_C_CPUs_load_percentage + server_D_CPUs_load_percentage) / 4);
 
-		int overloaded_servers = 0;
-		if (server_A_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
-		if (server_B_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
-		if (server_C_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
-		if (server_D_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
+		#ifdef DEBUG
+			cout << "server A netlink load: " << server_A_netlink_load_percentage << endl;
+			cout << "server B netlink load: " << server_B_netlink_load_percentage << endl;
+			cout << "server C netlink load: " << server_C_netlink_load_percentage << endl;
+			cout << "server D netlink load: " << server_D_netlink_load_percentage << endl;
+		#endif
 
-		if (overloaded_servers >= 2 && ret >= 2) {
+		serverAnetlinkLoadPercentage(server_A_netlink_load_percentage);
+		serverBnetlinkLoadPercentage(server_B_netlink_load_percentage);
+		serverCnetlinkLoadPercentage(server_C_netlink_load_percentage);
+		serverDnetlinkLoadPercentage(server_D_netlink_load_percentage);
+		clusterNetlinkLoadPercentage( (server_A_netlink_load_percentage + server_B_netlink_load_percentage
+							+ server_C_netlink_load_percentage + server_D_netlink_load_percentage) / 4);
+
+		int overloaded_cluster_netlinks = 0;
+		if (server_A_netlink_load_percentage >= OVERLOAD_RATIO) overloaded_cluster_netlinks++;
+		if (server_B_netlink_load_percentage >= OVERLOAD_RATIO) overloaded_cluster_netlinks++;
+		if (server_C_netlink_load_percentage >= OVERLOAD_RATIO) overloaded_cluster_netlinks++;
+		if (server_D_netlink_load_percentage >= OVERLOAD_RATIO) overloaded_cluster_netlinks++;
+
+		if (overloaded_cluster_netlinks >= 2 || ((server_A_CPUs_load_percentage + server_B_CPUs_load_percentage
+					+ server_C_CPUs_load_percentage + server_D_CPUs_load_percentage) / 4 >= OVERLOAD_RATIO )) {
 
 			if (server_A_net_link.Full() && server_B_net_link.Full() && server_C_net_link.Full()
-				&& server_D_net_link.Full() && ret == 4) {
+				&& server_D_net_link.Full() && checkClusterCPUsOverload() == 4) {
 				
 				#ifdef DEBUG
 					cout << "cluster is overwhelmed" << endl;
@@ -321,6 +391,7 @@ public:
 					goto B_server;
 
 				Enter(server_A_net_link, 1);
+				Wait(server_A_net_link_treatment_T);
 
 				for(i = 0; i < server_A_NCPU; i++) {
 					if (!A_cpu[i].Busy()) {
@@ -346,6 +417,7 @@ public:
 				t = Time;
 
 				Enter(server_A_net_link, 1);
+				Wait(server_A_net_link_treatment_T);
 
 				for(i = 0; i < server_A_NCPU; i++) {
 					if (!A_cpu[i].Busy()) {
@@ -386,6 +458,7 @@ public:
 				}
 
 				Enter(server_B_net_link, 1);
+				Wait(server_B_net_link_treatment_T);
 
 				for(i = 0; i < server_B_NCPU; i++) {
 					if (!B_cpu[i].Busy()) {
@@ -411,6 +484,7 @@ public:
 				t = Time;
 
 				Enter(server_B_net_link, 1);
+				Wait(server_B_net_link_treatment_T);
 
 				for(i = 0; i < server_B_NCPU; i++) {
 					if (!B_cpu[i].Busy()) {
@@ -452,6 +526,7 @@ public:
 					goto D_server;
 
 				Enter(server_C_net_link, 1);
+				Wait(server_C_net_link_treatment_T);
 
 				for(i = 0; i < server_C_NCPU; i++) {
 					if (!C_cpu[i].Busy()) {
@@ -479,6 +554,7 @@ public:
 				t = Time;
 
 				Enter(server_C_net_link, 1);
+				Wait(server_C_net_link_treatment_T);
 
 				for(i = 0; i < server_C_NCPU; i++) {
 					if (!C_cpu[i].Busy()) {
@@ -522,6 +598,7 @@ public:
 				}
 
 				Enter(server_D_net_link, 1);
+				Wait(server_D_net_link_treatment_T);
 
 				for(i = 0; i < server_D_NCPU; i++) {
 					if (!D_cpu[i].Busy()) {
@@ -548,6 +625,7 @@ public:
 				#endif
 				t = Time;
 				Enter(server_D_net_link, 1);
+				Wait(server_D_net_link_treatment_T);
 
 				for(i = 0; i < server_D_NCPU; i++) {
 					if (!D_cpu[i].Busy()) {
@@ -683,11 +761,19 @@ int main() {
 	clusterOverloadTime.Output();
 	clusterOverwhelmedTime.Output();
 	clusterNormalStateTime.Output();
-	clusterLoadPercentage.Output();
-	serverAloadPercentage.Output();
-	serverBloadPercentage.Output();
-	serverCloadPercentage.Output();
-	serverDloadPercentage.Output();
+
+	clusterNetlinkLoadPercentage.Output();
+	serverAnetlinkLoadPercentage.Output();
+	serverBnetlinkLoadPercentage.Output();
+	serverCnetlinkLoadPercentage.Output();
+	serverDnetlinkLoadPercentage.Output();
+
+	clusterCPUsLoadPercentage.Output();
+	serverACPUsLoadPercentage.Output();
+	serverBCPUsLoadPercentage.Output();
+	serverCCPUsLoadPercentage.Output();
+	serverDCPUsLoadPercentage.Output();
+
 	treatmentTime.Output();
 
 }
