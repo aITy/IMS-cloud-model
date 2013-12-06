@@ -7,11 +7,15 @@
 // temporary
 #include "simlib.h"
 #include <iostream>
+#include <string.h>
+#include <math.h>
 
 using namespace std;
 
 //#define servers_count 4
 
+#define hour * (3600 * 1.0e3)
+#define hours hour
 #define minute  * (60 * 1.0e3)
 #define minutes minute
 #define second  * 1.0e3
@@ -20,19 +24,19 @@ using namespace std;
 
 #define A_req_treatment_T Uniform(0.1 seconds, 1 seconds)
 #define B_req_treatment_T Uniform(0.25 seconds, 1 seconds)
-#define C_req_treatment_T Uniform(0.5 seconds, 1 seconds)
+#define C_req_treatment_T Uniform(0.25 seconds, 1 seconds)
 #define D_req_treatment_T Uniform(0.5 seconds, 1.5 seconds)
 
-#define OVERLOAD_RATIO (double)0.9
+#define OVERLOAD_RATIO 0.9
 
 //#define DEBUG 1
 
-#define sim_T 3600 * 24 seconds
+#define sim_T 24 hours
 
-const int server_A_net_link_cap = 500;
-const int server_B_net_link_cap = 250;
-const int server_C_net_link_cap = 200;
-const int server_D_net_link_cap = 100;
+const int server_A_net_link_cap = 100;
+const int server_B_net_link_cap = 75;
+const int server_C_net_link_cap = 50;
+const int server_D_net_link_cap = 50;
 
 const int server_A_NCPU = 4;
 const int server_B_NCPU = 3;
@@ -135,8 +139,24 @@ Stat serverBloadPercentage("Server B load percentage %");
 Stat serverCloadPercentage("Server C load percentage %");
 Stat serverDloadPercentage("Server D load percentage %");
 
-int dayhours() {
-	return ((int) (Time / 3600)) % 24;
+int parseTime(const char * str) {
+
+    if (strcmp(str, "day") == 0)
+    	return (int) (Time / ((double)1000*60*60*24.0));
+    if (strcmp(str, "hours") == 0) {
+    	int hours_nb = (int) (Time / ((double)1000*60*60.0));
+    	return (hours_nb == 24) ? 0 : hours_nb;
+    }
+    if (strcmp(str, "minutes") == 0) {
+    	int minutes_nb = (int) ((fmod(Time, 1000*60*60.0)) / ((double)1000*60.0));
+    	return (minutes_nb == 60) ? 0 : minutes_nb;
+    }
+    if (strcmp(str, "seconds") == 0) {
+    	int seconds_nb = (int) ((fmod((fmod(Time,1000*60*60.0)),1000*60.0)) / 1000);
+    	return (seconds_nb == 60) ? 0 : seconds_nb;
+    }
+
+    return -1;
 }
 
 int checkClusterCPUsOverload() {
@@ -146,25 +166,25 @@ int checkClusterCPUsOverload() {
 		if (! A_cpu[i].Busy())
 			break;
 	}
-	if (i == server_A_NCPU - 1) overloaded_count++;
+	if (i == server_A_NCPU) overloaded_count++;
 
 	for(i = 0; i < server_B_NCPU; i++) {
 		if (! B_cpu[i].Busy())
 			break;
 	}
-	if (i == server_B_NCPU - 1) overloaded_count++;
+	if (i == server_B_NCPU) overloaded_count++;
 
 	for(i = 0; i < server_C_NCPU; i++) {
 		if (! C_cpu[i].Busy())
 			break;
 	}
-	if (i == server_C_NCPU - 1) overloaded_count++;
+	if (i == server_C_NCPU) overloaded_count++;
 
 	for(i = 0; i < server_D_NCPU; i++) {
 		if (! D_cpu[i].Busy())
 			break;
 	}
-	if (i == server_D_NCPU - 1) overloaded_count++;
+	if (i == server_D_NCPU) overloaded_count++;
 
 	#ifdef DEBUG
 		cout << "servers cpu overloaded count:" << overloaded_count << endl;
@@ -203,10 +223,10 @@ public:
 		if (server_C_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
 		if (server_D_load_percentage >= OVERLOAD_RATIO) overloaded_servers++;
 
-		if (overloaded_servers >= 3){//&& ret >= 2) {
+		if (overloaded_servers >= 2 && ret >= 2) {
 
 			if (server_A_net_link.Full() && server_B_net_link.Full() && server_C_net_link.Full()
-				&& server_D_net_link.Full() ){//&& ret == 4) {
+				&& server_D_net_link.Full() && ret == 4) {
 				
 				#ifdef DEBUG
 					cout << "cluster is overwhelmed" << endl;
@@ -280,119 +300,272 @@ public:
 		(new clusterOverloadCheck)->Activate();
 		double prob = Random();
 		double t;
+		int i;
 		// 35% chance,that request will be treated by server A
 		if (prob < 0.35) {
 			A_server:
-			if (overloaded) {
-				server_A_net_link_req_count++;
+			if (overwhelmed) {
 				#ifdef DEBUG
-					cout << "request treated by server A. total requests count:" << server_A_net_link_req_count << endl;
+					cout << "cluster is overwhelmed - ignoring incoming request. Total ingnored requests count:" << ignored_req_count << endl;
 				#endif
-				t = Time;
-				Enter(server_A_net_link, 1);
-				Wait(A_req_treatment_T);
-				Leave(server_A_net_link, 1);
-				treatmentTime(Time - t);
+				ignored_req_count++;
+				Terminate();
 			}
-			else if ((double)server_A_net_link.Used()/server_A_net_link.Capacity() < OVERLOAD_RATIO) {
-				server_A_net_link_req_count++;
+			else if (overloaded) {
 				#ifdef DEBUG
 					cout << "request treated by server A. total requests count:" << server_A_net_link_req_count << endl;
 				#endif
 				t = Time;
+
+				if (server_A_net_link.Full())
+					goto B_server;
+
 				Enter(server_A_net_link, 1);
+
+				for(i = 0; i < server_A_NCPU; i++) {
+					if (!A_cpu[i].Busy()) {
+						Seize(A_cpu[i]);
+						break;
+					}
+				}
+				if (i == server_A_NCPU) {
+					Leave(server_A_net_link, 1);
+					goto B_server;
+				}
+				
 				Wait(A_req_treatment_T);
 				Leave(server_A_net_link, 1);
+				Release(A_cpu[i]);
 				treatmentTime(Time - t);
+				server_A_net_link_req_count++;
+			}
+			else if ((double)(server_A_net_link.Used()/server_A_net_link.Capacity()) < OVERLOAD_RATIO) {
+				#ifdef DEBUG
+					cout << "request treated by server A. total requests count:" << server_A_net_link_req_count << endl;
+				#endif
+				t = Time;
+
+				Enter(server_A_net_link, 1);
+
+				for(i = 0; i < server_A_NCPU; i++) {
+					if (!A_cpu[i].Busy()) {
+						Seize(A_cpu[i]);
+						break;
+					}
+				}
+				if (i == server_A_NCPU) {
+					Leave(server_A_net_link, 1);
+					goto B_server;
+				}
+				Wait(A_req_treatment_T);
+				Leave(server_A_net_link, 1);
+				Release(A_cpu[i]);
+				treatmentTime(Time - t);
+				server_A_net_link_req_count++;
 			}
 			else goto B_server;
 		}
-		// 25% chance,that request will be treated by server B
-		else if (prob < 0.6) {
+		// 30% chance,that request will be treated by server B
+		else if (prob < 0.65) {
 			B_server:
-			if (overloaded) {
-				server_B_net_link_req_count++;
-				#ifdef DEBUG
-					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
-				#endif
-				t = Time;
-				Enter(server_B_net_link, 1);
-				Wait(B_req_treatment_T);
-				Leave(server_B_net_link, 1);
-				treatmentTime(Time - t);
-			}
-			else if ((double)server_B_net_link.Used()/server_B_net_link.Capacity() < OVERLOAD_RATIO) {
-				server_B_net_link_req_count++;
-				#ifdef DEBUG
-					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
-				#endif
-				t = Time;
-				Enter(server_B_net_link, 1);
-				Wait(B_req_treatment_T);
-				Leave(server_B_net_link, 1);
-				treatmentTime(Time - t);
-			}
-			else goto C_server;
-		}
-		// 25% chance,that request will be treated by server C
-		else if (prob < 0.85) {
-			C_server:
-			if (overloaded) {
-				server_C_net_link_req_count++;
-				#ifdef DEBUG
-					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
-				#endif
-				t = Time;
-				Enter(server_C_net_link, 1);
-				Wait(C_req_treatment_T);
-				Leave(server_C_net_link, 1);
-				treatmentTime(Time - t);
-			}
-			else if ((double)server_C_net_link.Used()/server_C_net_link.Capacity() < OVERLOAD_RATIO) {
-				server_C_net_link_req_count++;
-				#ifdef DEBUG
-					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
-				#endif
-				t = Time;
-				Enter(server_C_net_link, 1);
-				Wait(C_req_treatment_T);
-				Leave(server_C_net_link, 1);
-				treatmentTime(Time - t);
-			}
-			else goto D_server;
-		}
-		// 15% chance,that request will be treated by server D
-		else {
-			D_server:
 			if (overwhelmed) {
-				// cluster je zahlcen - odchod transakce ze systemu
-				ignored_req_count++;
 				#ifdef DEBUG
 					cout << "cluster is overwhelmed - ignoring incoming request. Total ingnored requests count:" << ignored_req_count << endl;
 				#endif
 				Terminate();
+				ignored_req_count++;
 			}
 			else if (overloaded) {
-				server_D_net_link_req_count++;
+				
 				#ifdef DEBUG
-					cout << "request treated by server D. total requests count:" << server_D_net_link_req_count << endl;
+					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
 				#endif
 				t = Time;
-				Enter(server_D_net_link, 1);
-				Wait(D_req_treatment_T);
-				Leave(server_D_net_link, 1);
+				if (server_B_net_link.Full()) {
+					goto C_server;
+				}
+
+				Enter(server_B_net_link, 1);
+
+				for(i = 0; i < server_B_NCPU; i++) {
+					if (!B_cpu[i].Busy()) {
+						Seize(B_cpu[i]);
+						break;
+					}
+				}
+				if (i == server_B_NCPU) {
+					Leave(server_B_net_link, 1);
+					goto C_server;
+				}
+
+				Wait(B_req_treatment_T);
+				Leave(server_B_net_link, 1);
+				Release(B_cpu[i]);
 				treatmentTime(Time - t);
+				server_B_net_link_req_count++;
 			}
-			else if ((double)server_D_net_link.Used()/server_D_net_link.Capacity() < OVERLOAD_RATIO) {
+			else if ((double)(server_B_net_link.Used()/server_B_net_link.Capacity()) < OVERLOAD_RATIO) {
+				#ifdef DEBUG
+					cout << "request treated by server B. total requests count:" << server_B_net_link_req_count << endl;
+				#endif
+				t = Time;
+
+				Enter(server_B_net_link, 1);
+
+				for(i = 0; i < server_B_NCPU; i++) {
+					if (!B_cpu[i].Busy()) {
+						Seize(B_cpu[i]);
+						break;
+					}
+				}
+				if (i == server_B_NCPU) {
+					Leave(server_B_net_link, 1);
+					goto C_server;
+				}
+				
+				Wait(B_req_treatment_T);
+				Leave(server_B_net_link, 1);
+				Release(B_cpu[i]);
+				treatmentTime(Time - t);
+				server_B_net_link_req_count++;
+			}
+			else goto C_server;
+		}
+		// 25% chance,that request will be treated by server C
+		else if (prob < 0.9) {
+			C_server:
+			if (overwhelmed) {
+				#ifdef DEBUG
+					cout << "cluster is overwhelmed - ignoring incoming request. Total ingnored requests count:" << ignored_req_count << endl;
+				#endif
+				ignored_req_count++;
+				Terminate();
+			}
+
+			else if (overloaded) {
+				
+				#ifdef DEBUG
+					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
+				#endif
+				t = Time;
+				if (server_C_net_link.Full())
+					goto D_server;
+
+				Enter(server_C_net_link, 1);
+
+				for(i = 0; i < server_C_NCPU; i++) {
+					if (!C_cpu[i].Busy()) {
+						Seize(C_cpu[i]);
+						break;
+					}
+				}
+
+				if (i == server_C_NCPU) {
+					Leave(server_C_net_link, 1);
+					goto D_server;
+				}
+
+				Wait(C_req_treatment_T);
+				Leave(server_C_net_link, 1);
+				Release(C_cpu[i]);
+				treatmentTime(Time - t);
+				server_C_net_link_req_count++;
+			}
+			else if ((double) (server_C_net_link.Used()/server_C_net_link.Capacity()) < OVERLOAD_RATIO) {
+
+				#ifdef DEBUG
+					cout << "request treated by server C. total requests count:" << server_C_net_link_req_count << endl;
+				#endif
+				t = Time;
+
+				Enter(server_C_net_link, 1);
+
+				for(i = 0; i < server_C_NCPU; i++) {
+					if (!C_cpu[i].Busy()) {
+						Seize(C_cpu[i]);
+						break;
+					}
+				}
+
+				if (i == server_C_NCPU) {
+					Leave(server_C_net_link, 1);
+					goto D_server;
+				}
+
+				Wait(C_req_treatment_T);
+				Leave(server_C_net_link, 1);
+				Release(C_cpu[i]);
+				treatmentTime(Time - t);
+				server_C_net_link_req_count++;
+			}
+			else goto D_server;
+		}
+		// 10% chance,that request will be treated by server D
+		else {
+			D_server:
+			if (overwhelmed) {
+				#ifdef DEBUG
+					cout << "cluster is overwhelmed - ignoring incoming request. Total ingnored requests count:" << ignored_req_count << endl;
+				#endif
+				ignored_req_count++;
+				Terminate();
+			}
+			else if (overloaded) {
+				
+				#ifdef DEBUG
+					cout << "request treated by server D. total requests count:" << server_D_net_link_req_count << endl;
+				#endif
+				t = Time;
+
+				if (server_D_net_link.Full()) {
+					goto A_server;
+				}
+
+				Enter(server_D_net_link, 1);
+
+				for(i = 0; i < server_D_NCPU; i++) {
+					if (!D_cpu[i].Busy()) {
+						Seize(D_cpu[i]);
+						break;
+					}
+				}
+
+				if (i == server_D_NCPU) {
+					Leave(server_D_net_link, 1);
+					goto A_server;
+				}
+
+				Wait(D_req_treatment_T);
+				Leave(server_D_net_link, 1);
+				Release(D_cpu[i]);
+				treatmentTime(Time - t);
 				server_D_net_link_req_count++;
+			}
+			else if ((double)(server_D_net_link.Used()/server_D_net_link.Capacity()) < OVERLOAD_RATIO) {
+				
 				#ifdef DEBUG
 					cout << "request treated by server D. total requests count:" << server_D_net_link_req_count << endl;
 				#endif
 				t = Time;
 				Enter(server_D_net_link, 1);
+
+				for(i = 0; i < server_D_NCPU; i++) {
+					if (!D_cpu[i].Busy()) {
+						Seize(D_cpu[i]);
+						break;
+					}
+				}
+
+				if (i == server_D_NCPU) {
+					Leave(server_D_net_link, 1);
+					goto A_server;
+				}
+
 				Wait(D_req_treatment_T);
 				Leave(server_D_net_link, 1);
+				Release(D_cpu[i]);
 				treatmentTime(Time - t);
+				server_D_net_link_req_count++;
 			}
 			else {				
 				goto A_server;
@@ -407,7 +580,7 @@ class RequestGeneratorUs : public Event {
 			cout << "generating request in US (more often)" << endl;
 		#endif
 		(new incomingClusterRequest(0))->Activate();
-		Activate(Time + Exponential(0.05 seconds));
+		Activate(Time + Exponential(0.025 seconds));
 	}
 };
 
@@ -417,14 +590,15 @@ class highTrafficGenerator : public Event {
 			cout << "generating high traffic" << endl;
 		#endif
 
-		if (dayhours() >= 14)
+		// from 2pm
+		if (parseTime("hours") >= 14)
 			(new incomingClusterRequest(0))->Activate();
 
-		// to 22:00, next activation will be in 16 hours, that is at 2pm next day
-		if (dayhours() == 23)
+		// to 10pm, next activation is scheduled at 2pm next day
+		if (parseTime("hours") == 23)
 			Activate(Time + (16 * 3600 seconds));
 		else
-			Activate(Time + Exponential(0.025 seconds));
+			Activate(Time + Exponential(0.015 seconds));
 	}
 };
 
@@ -433,12 +607,20 @@ class DDosGenerator : public Event {
 	void Behavior() {
 		#ifdef DEBUG
 			cout << "trying to achieve DDoS attack." << endl;
+			cout << "day: " << parseTime("day") << " dayhours: " << parseTime("hours") << " dayminutes: " << parseTime("minutes") << endl; 
 		#endif
+		(new incomingClusterRequest(0))->Activate();
 		// testing ... Dal bych to jen jednou treba 3 den nebo neco ...
-		if (dayhours() == 2) {
-			(new incomingClusterRequest(0))->Activate();
-		}
+		// 15 minutes long attempt to achieve DDoS
+		// !!! TOCHANGE day() == ?
+		if (parseTime("day") == 0 && parseTime("hours") == 2 && parseTime("minutes") >= 30 && parseTime("minutes") <= 45) {
 
+			Activate(Time + Exponential(0.005 seconds));
+			//cout << "day: " << parseTime("day") << " dayhours: " << parseTime("hours") << " dayminutes: " << parseTime("minutes") << endl; 
+		}
+		else {
+			Activate(Time + (2 hours + 30 minutes));
+		}
 	}
 };
 
@@ -468,7 +650,7 @@ int main() {
 	int i;
 
 	// set shared queues for servers CPUs
-	for (i = 0; i < server_A_NCPU; i++) A_cpu[i].SetQueue(A_cpu_queue);
+/*	for (i = 0; i < server_A_NCPU; i++) A_cpu[i].SetQueue(A_cpu_queue);
 	for (i = 0; i < server_B_NCPU; i++) B_cpu[i].SetQueue(B_cpu_queue);
 	for (i = 0; i < server_C_NCPU; i++) C_cpu[i].SetQueue(C_cpu_queue);
 	for (i = 0; i < server_D_NCPU; i++) D_cpu[i].SetQueue(D_cpu_queue);
@@ -480,10 +662,11 @@ int main() {
 	for (i = 0; i < server_C_NCHANNEL; i++) C_channel[i].SetQueue(C_channel_queue);
 	for (i = 0; i < server_D_NCHANNEL; i++) D_channel[i].SetQueue(D_channel_queue);
 
-
+*/
 	// General test
 	(new RequestGeneratorUs)->Activate();
 	(new highTrafficGenerator)->Activate();
+	(new DDosGenerator)->Activate();
 	// .
 	// .
 	// .
@@ -494,7 +677,7 @@ int main() {
 
 	cout << "Number of received requests: " << cluster_req_count << endl;
 	cout << "Number of ignored requests: " << ignored_req_count << endl;
-	cout << "Ignored requests ratio: " << (double)ignored_req_count/cluster_req_count << endl;
+	cout << "Ignored requests ratio: " << (double)(ignored_req_count/cluster_req_count) << endl;
 
 	// histogram output
 	clusterOverloadTime.Output();
