@@ -1,7 +1,6 @@
 /**
  * Projekt do predmetu IMS - Model cloudoveho centra
  * Vypracoval: 	Jiri Navratil, xnavra36@stud.fit.vutbr.cz
- *				Petr Caha, xcahab00@stud.fit.vutbr.cz
 **/
 
 #include "simlib.h"
@@ -26,40 +25,24 @@ using namespace std;
 #define miliseconds * 1.0
 
 #define SERVERS_COUNT 4
+#define SERVERS_TOOKDOWN 0
 #define OVERLOAD_RATIO 0.7
 #define sim_T 24 hours
 
 //#define DEBUG 1
 
-// auxiliary fuction which returns summary of server components
-// NOT USED
-int sumArr(int * arr) {
-	int val = 0;
-	for(int i = 0; i < SERVERS_COUNT; i++) {
-		val += arr[i];
-	}
-	return val;
-}
-
-int Uniform(int min, int max) {
-  return int( Uniform(double(min), double(max)) );
-}
-
 bool SERVERS_RUNNING[SERVERS_COUNT];
 int SERVERS_NCPU[SERVERS_COUNT] = { 32, 24, 16, 16 };
+
 // netlink request capacity had to be lowered due to evaluating low double value as 0 -> cant simulate so frequent requests 
 int SERVERS_NETLINK_CAP[SERVERS_COUNT] = { 100, 75, 50, 50 };
 int SERVERS_NDISK[SERVERS_COUNT] = { 32, 32, 24, 16 };
 int SERVERS_NMEM[SERVERS_COUNT] = { 16384, 8192, 8192, 8192 };
 
-// SADLY NOT WORKING - cannot define array, if the size is not known at compile runtime
-//#define TOTAL_CPUS sumArr(SERVERS_NCPU)
-//#define TOTAL_DISKS sumArr(SERVERS_NDISK)
-
 // SO IT IS NESSESARY TO DEFINE TOTAL AMOUNT OF CPUS AND DISKS THIS WAY =(
 // IT IS SUMMARY OF ALL SERVERS COMPONENTS - THE RESULT VALUE MUST MATCH THE COMPONENT SUM defined above
 #define TOTAL_CPUS 32 + 24 + 16 + 16  	//all cpus
-#define TOTAL_DISKS 32 + 32 + 24 + 16	 	//all disks
+#define TOTAL_DISKS 32 + 32 + 24 + 16	//all disks
 
 const double SERVERS_SEARCH_T[SERVERS_COUNT] = { 0.02 second, 0.06 second, 0.08 second, 0.1 second };
 
@@ -99,10 +82,10 @@ Histogram clusterOverwhelmedTime("Cluster is overwhelmed", 0, 0.1 second, 10);
 Histogram clusterNormalStateTime("Cluster face to normal traffic", 0, 30 minutes);
 Histogram treatmentTime("Cluster net link treatment time", 0.1 second, 0.025 second, 25);
 Histogram responseTime("request response time", 0, 0.25 second, 15);
-Histogram netLayerReqWalkthroughtTime("Request net layer walkthrough time", 0.05 second, 0.1 second, 10);
+Histogram netLayerReqWalkthroughtTime("Request net layer walkthrough time", 0.05 second, 0.1 second, 15);
 Histogram fileshareDownloadTime[SERVERS_COUNT];
 Histogram fileshareUploadTime[SERVERS_COUNT];
-Histogram emailServiceTime("Email action Time", 0.05 second, 0.1 second, 20);
+Histogram emailServiceTime[SERVERS_COUNT];
 
 Histogram clusterDataReplicationCycleTime("Cluster data replication cycle time", 0, 0.25 second, 15);
 Histogram serverDataReplicationCycleTime[SERVERS_COUNT];
@@ -112,8 +95,8 @@ Stat clusterCPUsLoadPercentage("Cluster CPUs load percentage");
 Stat serversNetlinksLoadPercentage[SERVERS_COUNT];
 Stat serversCPUsLoadPercentage[SERVERS_COUNT];
 
-bool overloaded = false; // zatizeni
-bool overwhelmed = false; // zahlceni
+bool overloaded = false;
+bool overwhelmed = false;
 bool normal_state_changed = false;
 double overloaded_T = 0;
 double overwhelmed_T = 0;
@@ -126,10 +109,9 @@ double net_ignored_req_count = 0;
 double app_ignored_req_count = 0;
 double file_share_download_actions = 0; 
 double file_share_upload_actions = 0;
-double file_share_upload_actions_buf = 0;
 double video_streaming_actions = 0;
+double data_replication_buf = 0;
 double email_actions = 0;
-double email_actions_buf = 0;
 double server_net_link_req_count[SERVERS_COUNT];
 
 // NOT USED
@@ -144,6 +126,10 @@ int sum(int count, ...) {
 	}
 	va_end(ap);
 	return aux;
+}
+
+int Uniform(int min, int max) {
+  return int( Uniform(double(min), double(max)) );
 }
 
 // auxiliary function that convert integer number into string
@@ -195,7 +181,8 @@ public:
 		int overloaded_servers_cpus = 0;
 
 		for(i = 0; i < SERVERS_COUNT; i++) {
-			if (! SERVERS_RUNNING[i]) {
+			if ( SERVERS_RUNNING[i] == false ) {
+				servers_netlink_load_percentage[i] = 1;
 				total_cluster_netlink_load_percentage += 1;
 				continue;
 			}
@@ -616,6 +603,11 @@ public:
 				end_hdd = SERVERS_NDISK[idx];
 			}
 			else {
+				start_cpu = 0;
+				end_cpu = 0;
+				start_hdd = 0;
+				end_hdd = 0;
+
 				for(i = 0; i <= idx; i++) {
 					if (i != idx) {
 						start_cpu += SERVERS_NCPU[i];
@@ -713,7 +705,7 @@ public:
 
 				file_share_upload_actions++;
 				//trigger data replication
-				file_share_upload_actions_buf++;
+				data_replication_buf++;
 			}	
 
 		}
@@ -753,6 +745,10 @@ public:
 				end_hdd = SERVERS_NDISK[idx];
 			}
 			else {
+				start_cpu = 0;
+				end_cpu = 0;
+				start_hdd = 0;
+				end_hdd = 0;
 				for(i = 0; i <= idx; i++) {
 					if (i != idx) {
 						start_cpu += SERVERS_NCPU[i];
@@ -844,11 +840,11 @@ public:
 			if (servers_mems_queues[idx].Length() > 0)
 				(servers_mems_queues[idx].GetFirst())->Activate();
 
-			emailServiceTime(Time - email_T);
+			emailServiceTime[idx](Time - email_T);
 
 			email_actions++;
 			// trigger data replication
-			email_actions_buf++;
+			data_replication_buf++;
 		}
 		//19% chance to video streaming service
 		/*else {
@@ -866,16 +862,8 @@ public:
 	dataReplication(int priority) : Process(priority), one_cycle_T(0.0), cluster_cycle_T(0.0) {};
 	void Behavior() {
 		repeat:
-			WaitUntil(file_share_upload_actions_buf > 0 || email_actions_buf > 0);
-			if (file_share_upload_actions_buf >= 0 && email_actions_buf == 0)
-				file_share_upload_actions_buf--;
-			else if(file_share_upload_actions_buf == 0 && email_actions_buf > 0)
-				email_actions_buf--;
-			else {
-				// reduce the amount of data replication from different actions - not nessessary
-				file_share_upload_actions_buf--;
-				email_actions_buf--;
-			}
+			WaitUntil(data_replication_buf > 0);
+			data_replication_buf--;
 
 			int i,j;
 
@@ -971,7 +959,7 @@ class RequestGeneratorUs : public Event {
 			cout << "generating request in US (more frequent)" << endl;
 		#endif
 		(new incomingClusterRequest(0))->Activate();
-		Activate(Time + Exponential(0.02 seconds));
+		Activate(Time + Exponential(0.01 seconds));
 	}
 };
 
@@ -991,7 +979,7 @@ class highTrafficGenerator : public Event {
 		else if (parseTime("hours") == 22)
 			Activate(Time + (16 hours));
 		else
-			Activate(Time + Exponential(0.01 second));
+			Activate(Time + Exponential(0.02 second));
 
 	}
 };
@@ -1009,7 +997,7 @@ class adminTasksGenerator : public Event {
 		else if (parseTime("hours") >= 15 && parseTime("hours") < 16) {
 			// administration tasks have higher priority
 			(new incomingClusterRequest(1))->Activate();
-			Activate(Time + Exponential(0.33 second));
+			Activate(Time + Exponential(0.2 second));
 		}
 		else {
 			// scheduling on another day - admin task ended at 4pm, nest activation is scheduled on 3pm next day
@@ -1035,33 +1023,43 @@ class DosGenerator : public Event {
 			(new incomingClusterRequest(0))->Activate();
 			//(new incomingClusterRequest(0))->Activate();
 
-			Activate(Time + Exponential(0.015 seconds));
+			Activate(Time + Exponential(0.0045 seconds));
 		}
 	}
 };
 
-class ServerTakedown : public Event {
+class ServersTakedown : public Event {
 public:
 	bool down;
-	int ind;
-	ServerTakedown() {
+	vector<int> ind;
+
+	ServersTakedown() {
 		down = false;
-		ind = 0;
-	}
-	void Behavior() {
-		// in high traffic (from 2pm to 10 pm) -> take down one of the server for 5 minutes at 3pm
-		if (parseTime("day") == 0 && parseTime("hours") == 15 && !down) {
-			ind = Uniform((int)0, (int)SERVERS_COUNT);
-			SERVERS_RUNNING[ind] = false;
-			down = true;
-			Activate(Time + 15 minutes);
+		for(int i = 0; i < SERVERS_TOOKDOWN; i++) {
+			ind.push_back(0);
 		}
+	}
+
+	void Behavior() {
+		// in high traffic (from 2pm to 10 pm) -> take down one of the server for 5 minutes at 3:01pm
 		if (down) {
-			SERVERS_RUNNING[ind] = true;
+			for(int i = 0; i < SERVERS_TOOKDOWN; i++) {
+				SERVERS_RUNNING[ind[i]] = true;
+			}
 			down = false;
 		}
+		if (parseTime("day") == 0 && parseTime("hours") == 15 && !down) {
+			int pom = Uniform((int)0, (int)SERVERS_COUNT);
+
+			for(int i = 0; i < SERVERS_TOOKDOWN; i++) {
+				ind[i] = (pom == SERVERS_COUNT - 1) ? 0 : pom + 1;
+				SERVERS_RUNNING[ind[i]] = false;
+				down = true;
+			}
+			Activate(Time + 1 hour);
+		}
 		if (parseTime("day") == 0 && parseTime("hours") == 0)
-			Activate(Time + 15 hours);
+			Activate(Time + 15 hours + 1 minute);
 	}
 };
 
@@ -1104,6 +1102,7 @@ int main() {
 	char data_repl_ser[SERVERS_COUNT][80];
 	char upload[SERVERS_COUNT][80];
 	char download[SERVERS_COUNT][80];
+	char mail[SERVERS_COUNT][80];
 	string nb;
 	
 	for(i = 0; i < SERVERS_COUNT; i++) {
@@ -1112,31 +1111,37 @@ int main() {
 		data_repl_ser[i][0] = '\0';
 		upload[i][0] = '\0';
 		download[i][0] = '\0';
+		mail[i][0] = '\0';
 		nb = convertInt(i + 1);
 		strcpy(net[i], "Server ");
 		strcpy(cpu[i], "Server ");
 		strcpy(data_repl_ser[i], "Server ");
 		strcpy(upload[i], "Server ");
 		strcpy(download[i], "Server ");
+		strcpy(mail[i], "Server ");
 		strcat(net[i], nb.c_str());
 		strcat(cpu[i], nb.c_str());
 		strcat(data_repl_ser[i], nb.c_str());
 		strcat(upload[i], nb.c_str());
 		strcat(download[i], nb.c_str());
+		strcat(mail[i], nb.c_str());
 		strcat(net[i], " netlink load rate");
 		strcat(cpu[i], " CPUs load rate");
 		strcat(data_repl_ser[i], " data replication cycle time");
 		strcat(upload[i], " fileshare upload time");
 		strcat(download[i], " fileshare download time");
+		strcat(mail[i], " mail service time");
 		
 		serversNetlinksLoadPercentage[i].SetName((const char *) net[i]);
 		serversCPUsLoadPercentage[i].SetName((const char * ) cpu[i]);
 		serverDataReplicationCycleTime[i].SetName((const char *) data_repl_ser[i]);
 		fileshareUploadTime[i].SetName((const char *) upload[i]);
 		fileshareDownloadTime[i].SetName((const char *) download[i]);
+		emailServiceTime[i].SetName((const char *) mail[i]);
 		serverDataReplicationCycleTime[i].Init(0, 0.25 second, 10);
 		fileshareUploadTime[i].Init(0.025 second, 0.2 second, 15);
 		fileshareDownloadTime[i].Init(0.025 second, 0.2 second, 15);
+		emailServiceTime[i].Init(0.05 second, 0.1 second, 15);
 	}
 
 	// set shared queues for server CPUs and disks
@@ -1176,7 +1181,7 @@ int main() {
 	(new highTrafficGenerator)->Activate();
 	(new DosGenerator)->Activate();
 	(new adminTasksGenerator)->Activate();
-	(new ServerTakedown())->Activate();
+	(new ServersTakedown())->Activate();
 	(new dataReplication(2))->Activate();
 
 	Run();
@@ -1193,10 +1198,10 @@ int main() {
 	cout << "Fileshare download ratio: " << (double)file_share_download_actions/(file_share_download_actions + file_share_upload_actions) << endl;
 	cout << "Fileshare upload ratio: " << (double)file_share_upload_actions/(file_share_download_actions + file_share_upload_actions) << endl;
 	cout << "Number of received email requests: " << email_actions << endl;
-	cout << "Number of received video streaming requests: " << video_streaming_actions << endl;
+	//cout << "Number of received video streaming requests: " << video_streaming_actions << endl;
 	cout << "Filesharing usage ratio: " << ((file_share_upload_actions + file_share_download_actions) / app_layer_req_count) * 100 << " %" << endl;
 	cout << "Email service usage ratio: " << (email_actions / app_layer_req_count) * 100 << " %" << endl;
-	cout << "Video streaming usage ratio: " << (video_streaming_actions / app_layer_req_count) * 100 << " %" << endl;
+	//cout << "Video streaming usage ratio: " << (video_streaming_actions / app_layer_req_count) * 100 << " %" << endl;
 	cout << "Ignored net layer requests: " << net_ignored_req_count << endl;
 	cout << "Ignored net layer requests ratio: " << ((double)(net_ignored_req_count/net_layer_req_count) * 100) << " %" << endl;
 	cout << "Ignored application layer requests(bad requests): " << app_ignored_req_count << endl;
@@ -1230,7 +1235,9 @@ int main() {
 		fileshareUploadTime[i].Output();
 	}
 
-	emailServiceTime.Output();
+	for(i = 0; i < SERVERS_COUNT; i++) {
+		emailServiceTime[i].Output();
+	}
 
 	responseTime.Output();
 
@@ -1238,7 +1245,7 @@ int main() {
 	for (i = 0; i < SERVERS_COUNT; i++) {
 		serverDataReplicationCycleTime[i].Output();
 	}
-
+/*
 	for (i = 0; i < SERVERS_COUNT; i++) {
 		cout << "cpu " << i << endl;
 		servers_cpus_queues[i].Output();
@@ -1249,5 +1256,6 @@ int main() {
 		servers_hdds_queues[i].Output();
 	}
 
-	//SIMLIB_statistics.Output();
+	SIMLIB_statistics.Output();
+*/
 }
